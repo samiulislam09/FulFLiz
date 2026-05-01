@@ -82,6 +82,10 @@ export async function listProcessingOrdersWithCourier(
   const { page = 1, limit = 50 } = options;
   return postFilters({
     filters: approvedCourierFilters(),
+    // Hide orders we've already synced to FulFliz so the table is a true
+    // "to-do" list. Backed by the metafield write the route handler does
+    // after a successful sync.
+    exclude_metafields: [{ namespace: "fulfliz", key: "external_order_id" }],
     page,
     limit,
     sort: "created_at",

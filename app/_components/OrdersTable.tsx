@@ -6,8 +6,8 @@ import type { OrderRow } from "@/app/_lib/types";
 
 type Banner =
   | { kind: "success"; message: string }
-  | { kind: "warning"; message: string }
-  | { kind: "error"; message: string };
+  | { kind: "warning"; message: string; hint?: string; details?: string }
+  | { kind: "error"; message: string; hint?: string; details?: string };
 
 type SyncResponse = {
   ok?: boolean;
@@ -15,6 +15,8 @@ type SyncResponse = {
   skipped?: number;
   warning?: string;
   error?: string;
+  hint?: string;
+  details?: string;
 };
 
 type Pagination = {
@@ -81,7 +83,12 @@ export function OrdersTable({
       }
 
       if (!res.ok || !json.ok) {
-        setBanner({ kind: "error", message: json.error ?? `Sync failed (${res.status})` });
+        setBanner({
+          kind: "error",
+          message: json.error ?? `Sync failed (${res.status})`,
+          hint: json.hint,
+          details: json.details,
+        });
         return;
       }
 
@@ -89,7 +96,7 @@ export function OrdersTable({
       const summary =
         skipped > 0 ? `${synced} sent, ${skipped} skipped` : `${synced} sent to FulFliz`;
       if (warning) {
-        setBanner({ kind: "warning", message: `${summary}. ${warning}` });
+        setBanner({ kind: "warning", message: `${summary}. ${warning}`, details: json.details });
       } else {
         setBanner({ kind: "success", message: summary });
       }
@@ -135,13 +142,11 @@ export function OrdersTable({
                 />
               </th>
               <th scope="col" className="px-4 py-3">Order ID</th>
-              <th scope="col" className="px-4 py-3">Order #</th>
               <th scope="col" className="px-4 py-3">Courier</th>
               <th scope="col" className="px-4 py-3">Tracking</th>
               <th scope="col" className="px-4 py-3">Items</th>
               <th scope="col" className="px-4 py-3">Total</th>
               <th scope="col" className="px-4 py-3">Created</th>
-              <th scope="col" className="px-4 py-3">Status</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200">
@@ -170,27 +175,11 @@ export function OrdersTable({
                   <td className="px-4 py-3 font-mono text-xs text-zinc-500">
                     {row.order_id}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs">
-                    {row.store_serial_order_no ?? `#${row.order_id}`}
-                  </td>
                   <td className="px-4 py-3">{row.courier ?? "—"}</td>
                   <td className="px-4 py-3 font-mono text-xs">{row.tracking_code ?? "—"}</td>
                   <td className="px-4 py-3">{row.itemCount}</td>
-                  <td className="px-4 py-3">৳{row.grand_total.toLocaleString()}</td>
-                  <td className="px-4 py-3 text-xs">
-                    {new Date(row.created_at).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    {disabled ? (
-                      <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
-                        Synced
-                      </span>
-                    ) : (
-                      <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-                        Pending
-                      </span>
-                    )}
-                  </td>
+                  <td className="px-4 py-3">৳{row.grand_total_display}</td>
+                  <td className="px-4 py-3 text-xs">{row.created_at_display}</td>
                 </tr>
               );
             })}
@@ -273,24 +262,82 @@ function PaginationBar({ pagination }: { pagination: Pagination }) {
 }
 
 function BannerView({ banner, onClose }: { banner: Banner; onClose: () => void }) {
-  const styles =
+  const [showDetails, setShowDetails] = useState(false);
+
+  const palette =
     banner.kind === "error"
-      ? "border-red-300 bg-red-50 text-red-900"
+      ? {
+          container: "border-red-300 bg-red-50 text-red-900",
+          icon: "text-red-500",
+          symbol: "!",
+          mutedText: "text-red-700",
+          detailsBtn: "text-red-700 hover:text-red-900",
+          detailsBox: "bg-red-100/60 border-red-200 text-red-900",
+        }
       : banner.kind === "warning"
-        ? "border-amber-300 bg-amber-50 text-amber-900"
-        : "border-emerald-300 bg-emerald-50 text-emerald-900";
+        ? {
+            container: "border-amber-300 bg-amber-50 text-amber-900",
+            icon: "text-amber-500",
+            symbol: "!",
+            mutedText: "text-amber-700",
+            detailsBtn: "text-amber-700 hover:text-amber-900",
+            detailsBox: "bg-amber-100/60 border-amber-200 text-amber-900",
+          }
+        : {
+            container: "border-emerald-300 bg-emerald-50 text-emerald-900",
+            icon: "text-emerald-500",
+            symbol: "✓",
+            mutedText: "text-emerald-700",
+            detailsBtn: "text-emerald-700 hover:text-emerald-900",
+            detailsBox: "bg-emerald-100/60 border-emerald-200 text-emerald-900",
+          };
+
+  // Only error/warning banners can carry hint/details.
+  const hint =
+    banner.kind === "error" || banner.kind === "warning" ? banner.hint : undefined;
+  const details =
+    banner.kind === "error" || banner.kind === "warning" ? banner.details : undefined;
 
   return (
-    <div className={`flex items-start justify-between gap-4 rounded-md border px-4 py-3 text-sm ${styles}`}>
-      <span>{banner.message}</span>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="Dismiss"
-        className="text-current opacity-60 hover:opacity-100"
-      >
-        ×
-      </button>
+    <div className={`rounded-md border px-4 py-3 text-sm ${palette.container}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <span
+            aria-hidden
+            className={`flex h-5 w-5 flex-none items-center justify-center rounded-full bg-white text-xs font-bold ${palette.icon}`}
+          >
+            {palette.symbol}
+          </span>
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="font-medium leading-5">{banner.message}</p>
+            {hint && <p className={`text-xs leading-5 ${palette.mutedText}`}>{hint}</p>}
+            {details && (
+              <button
+                type="button"
+                onClick={() => setShowDetails((v) => !v)}
+                className={`text-xs font-medium underline-offset-2 hover:underline ${palette.detailsBtn}`}
+              >
+                {showDetails ? "Hide technical details" : "Show technical details"}
+              </button>
+            )}
+            {showDetails && details && (
+              <pre
+                className={`mt-2 max-h-48 overflow-auto rounded border px-2 py-1 text-[11px] leading-4 whitespace-pre-wrap break-all ${palette.detailsBox}`}
+              >
+                {details}
+              </pre>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Dismiss"
+          className="text-current opacity-60 hover:opacity-100"
+        >
+          ×
+        </button>
+      </div>
     </div>
   );
 }

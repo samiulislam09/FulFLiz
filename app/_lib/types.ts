@@ -78,8 +78,12 @@ export type OrderRow = {
   store_serial_order_no: string | null;
   courier: string | null;
   tracking_code: string | null;
-  grand_total: number;
-  created_at: string;
+  // Both display fields are pre-formatted on the server with an explicit locale
+  // so server and client renders agree (avoids React hydration mismatches —
+  // toLocaleString() in the browser uses the user's OS locale and differs from
+  // the Node default on the server).
+  grand_total_display: string;
+  created_at_display: string;
   itemCount: number;
   alreadySynced: boolean;
 };

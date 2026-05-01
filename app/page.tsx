@@ -1,7 +1,9 @@
 import { listProcessingOrdersWithCourier } from "@/app/_lib/selorax";
+import { loadFulflizCredentials } from "@/app/_lib/credentials";
 import { FULFLIZ_METAFIELD_PATH } from "@/app/_lib/types";
 import { OrdersTable } from "@/app/_components/OrdersTable";
 import { EmptyState } from "@/app/_components/EmptyState";
+import { SetupForm } from "@/app/_components/SetupForm";
 
 export const dynamic = "force-dynamic";
 
@@ -21,22 +23,55 @@ function parseLimit(value: string | string[] | undefined): number {
 export default async function Home({
   searchParams,
 }: {
-  // Next.js 16: searchParams is a Promise that must be awaited.
   searchParams: Promise<{ page?: string; limit?: string }>;
 }) {
+  // Gate the entire page on FulFliz credentials being set up for this store.
+  // Until they are, we render the SetupForm instead of the orders table.
+  const credsResult = await loadFulflizCredentials();
+
+  if (credsResult.state !== "ready") {
+    const blockingMessage =
+      credsResult.state === "tables-not-installed"
+        ? "Metafield tables aren't installed in this database. Run SeloraX-Backend/migrations/2026-03-09-app-metafields.sql before saving credentials."
+        : null;
+
+    return (
+      <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
+        <header className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
+            FulFliz Order Sync
+          </h1>
+          <p className="mt-1 text-sm text-zinc-600">
+            Configure your FulFliz credentials to start syncing orders.
+          </p>
+        </header>
+        <SetupForm blockingMessage={blockingMessage} />
+      </div>
+    );
+  }
+
   const params = await searchParams;
   const page = parsePage(params.page);
   const limit = parseLimit(params.limit);
 
   const { data, pagination } = await listProcessingOrdersWithCourier({ page, limit });
 
+  // Format display strings server-side with an explicit locale + timezone so
+  // the client renders the same characters and React's hydration check passes.
+  const dateFmt = new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "Asia/Dhaka",
+  });
+  const numberFmt = new Intl.NumberFormat("en-US");
+
   const rows = data.map((o) => ({
     order_id: o.order_id,
     store_serial_order_no: o.store_serial_order_no,
     courier: o.courier,
     tracking_code: o.tracking_code,
-    grand_total: o.grand_total,
-    created_at: o.created_at,
+    grand_total_display: numberFmt.format(o.grand_total),
+    created_at_display: dateFmt.format(new Date(o.created_at)),
     itemCount: o.items.length,
     alreadySynced: Boolean(o.metafields?.[FULFLIZ_METAFIELD_PATH]),
   }));
