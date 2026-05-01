@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 type Props = {
+  storeId: string;
   // Pre-fill values come from the metafields read on the server (in case some
   // are set but others aren't). Only blank fields need filling in.
   initial?: {
@@ -13,9 +14,27 @@ type Props = {
   };
   // Banner message shown above the form — e.g. "Metafield tables not installed".
   blockingMessage?: string | null;
+  // Called after a successful save — if not provided, falls back to
+  // router.refresh() so the page picks up the new credentials.
+  onSuccess?: () => void;
+  // Optional secondary action (e.g. "Cancel" to close a parent modal).
+  onCancel?: () => void;
+  // Override the title/blurb when shown in non-first-run contexts.
+  heading?: string;
+  description?: string;
+  submitLabel?: string;
 };
 
-export function SetupForm({ initial, blockingMessage }: Props) {
+export function SetupForm({
+  storeId,
+  initial,
+  blockingMessage,
+  onSuccess,
+  onCancel,
+  heading = "Set up FulFliz credentials",
+  description = "These are stored as store-scoped metafields and used for every order sync. You only need to do this once per store.",
+  submitLabel = "Save & continue",
+}: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [merchantName, setMerchantName] = useState(initial?.merchantName ?? "");
@@ -33,7 +52,7 @@ export function SetupForm({ initial, blockingMessage }: Props) {
         res = await fetch("/api/setup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ merchantName, clientId, apiSecret }),
+          body: JSON.stringify({ storeId, merchantName, clientId, apiSecret }),
         });
       } catch (err) {
         setError(`Network error: ${(err as Error).message}`);
@@ -44,7 +63,8 @@ export function SetupForm({ initial, blockingMessage }: Props) {
         setError(json.error ?? `Save failed (${res.status})`);
         return;
       }
-      router.refresh();
+      if (onSuccess) onSuccess();
+      else router.refresh();
     });
   };
 
@@ -53,11 +73,8 @@ export function SetupForm({ initial, blockingMessage }: Props) {
   return (
     <div className="mx-auto w-full max-w-xl">
       <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-zinc-900">Set up FulFliz credentials</h2>
-        <p className="mt-1 text-sm text-zinc-600">
-          These are stored as store-scoped metafields and used for every order sync. You only need
-          to do this once per store.
-        </p>
+        <h2 className="text-lg font-semibold text-zinc-900">{heading}</h2>
+        <p className="mt-1 text-sm text-zinc-600">{description}</p>
 
         {blockingMessage && (
           <div className="mt-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
@@ -116,13 +133,23 @@ export function SetupForm({ initial, blockingMessage }: Props) {
             </p>
           </div>
 
-          <div className="flex justify-end pt-2">
+          <div className="flex items-center justify-end gap-2 pt-2">
+            {onCancel && (
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={isPending}
+                className="rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            )}
             <button
               type="submit"
               disabled={disabled || !merchantName || !clientId || !apiSecret}
               className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-zinc-300 disabled:text-zinc-500"
             >
-              {isPending ? "Saving..." : "Save & continue"}
+              {isPending ? "Saving..." : submitLabel}
             </button>
           </div>
         </form>

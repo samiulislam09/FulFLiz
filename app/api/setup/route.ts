@@ -3,6 +3,7 @@ import { saveFulflizCredentials } from "@/app/_lib/credentials";
 import { ensureFulflizMetafieldDefinitions } from "@/app/_lib/bootstrap-metafield";
 
 type Body = {
+  storeId?: unknown;
   merchantName?: unknown;
   clientId?: unknown;
   apiSecret?: unknown;
@@ -24,6 +25,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  if (typeof body.storeId !== "string" || !/^\d+$/.test(body.storeId.trim())) {
+    return NextResponse.json({ error: "storeId is required and must be numeric" }, { status: 400 });
+  }
+  const storeId = body.storeId.trim();
+
   const merchant = asString(body.merchantName, "merchantName", 255);
   const client = asString(body.clientId, "clientId");
   const secret = asString(body.apiSecret, "apiSecret", 1000);
@@ -32,11 +38,9 @@ export async function POST(request: Request) {
     if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
   }
 
-  // Definitions must exist before values can be saved. Bootstrap is idempotent
-  // and cached per process, so this is cheap on subsequent setups.
   let bootstrap;
   try {
-    bootstrap = await ensureFulflizMetafieldDefinitions();
+    bootstrap = await ensureFulflizMetafieldDefinitions(storeId);
   } catch (err) {
     console.error("[/api/setup] Bootstrap failed:", err);
     return NextResponse.json(
@@ -47,17 +51,13 @@ export async function POST(request: Request) {
 
   if (!bootstrap.available) {
     return NextResponse.json(
-      {
-        error:
-          "Metafield tables aren't installed in this database — can't save credentials. " +
-          "Run SeloraX-Backend/migrations/2026-03-09-app-metafields.sql first.",
-      },
+      { error: "Metafield tables aren't installed in this database." },
       { status: 503 },
     );
   }
 
   try {
-    await saveFulflizCredentials({
+    await saveFulflizCredentials(storeId, {
       merchantName: (merchant as { value: string }).value,
       clientId: (client as { value: string }).value,
       apiSecret: (secret as { value: string }).value,

@@ -28,9 +28,11 @@ type Pagination = {
 };
 
 export function OrdersTable({
+  storeId,
   rows,
   pagination,
 }: {
+  storeId: string;
   rows: OrderRow[];
   pagination: Pagination;
 }) {
@@ -67,7 +69,7 @@ export function OrdersTable({
         res = await fetch("/api/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ orderIds: ids }),
+          body: JSON.stringify({ storeId, orderIds: ids }),
         });
       } catch (err) {
         setBanner({ kind: "error", message: `Network error: ${(err as Error).message}` });
@@ -187,17 +189,20 @@ export function OrdersTable({
         </table>
       </div>
 
-      <PaginationBar pagination={pagination} />
+      <PaginationBar storeId={storeId} pagination={pagination} />
     </div>
   );
 }
 
-function PaginationBar({ pagination }: { pagination: Pagination }) {
+function PaginationBar({ storeId, pagination }: { storeId: string; pagination: Pagination }) {
   const router = useRouter();
   const { page, limit, total, totalPages, pageSizes } = pagination;
 
   const navigate = (nextPage: number, nextLimit: number) => {
     const params = new URLSearchParams();
+    // store_id must persist across pagination — without it the Server Component
+    // re-renders into the "store context missing" error state.
+    params.set("store_id", storeId);
     params.set("page", String(nextPage));
     params.set("limit", String(nextLimit));
     router.push(`/?${params.toString()}`);

@@ -2,12 +2,12 @@ import "server-only";
 import { env } from "./env";
 import type { SeloraxListResponse, SeloraxOrder } from "./types";
 
-function seloraxHeaders() {
+function seloraxHeaders(storeId: string) {
   return {
     "Content-Type": "application/json",
     "X-Client-Id": env.SELORAX_CLIENT_ID,
     "X-Client-Secret": env.SELORAX_CLIENT_SECRET,
-    "X-Store-Id": env.STORE_ID,
+    "X-Store-Id": storeId,
   };
 }
 
@@ -61,11 +61,11 @@ function approvedCourierFilters() {
   ];
 }
 
-async function postFilters(body: unknown): Promise<SeloraxListResponse> {
+async function postFilters(storeId: string, body: unknown): Promise<SeloraxListResponse> {
   const url = `${env.APP_API_URL}/api/apps/v1/orders/filters`;
   const res = await seloraxFetch(url, {
     method: "POST",
-    headers: seloraxHeaders(),
+    headers: seloraxHeaders(storeId),
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -77,10 +77,11 @@ async function postFilters(body: unknown): Promise<SeloraxListResponse> {
 }
 
 export async function listProcessingOrdersWithCourier(
+  storeId: string,
   options: { page?: number; limit?: number } = {},
 ): Promise<SeloraxListResponse> {
   const { page = 1, limit = 50 } = options;
-  return postFilters({
+  return postFilters(storeId, {
     filters: approvedCourierFilters(),
     // Hide orders we've already synced to FulFliz so the table is a true
     // "to-do" list. Backed by the metafield write the route handler does
@@ -93,7 +94,7 @@ export async function listProcessingOrdersWithCourier(
   });
 }
 
-export async function fetchOrdersByIds(orderIds: number[]): Promise<SeloraxOrder[]> {
+export async function fetchOrdersByIds(storeId: string, orderIds: number[]): Promise<SeloraxOrder[]> {
   if (orderIds.length === 0) return [];
   const filters = [
     ...approvedCourierFilters(),
@@ -105,11 +106,12 @@ export async function fetchOrdersByIds(orderIds: number[]): Promise<SeloraxOrder
       value: orderIds,
     },
   ];
-  const json = await postFilters({ filters, page: 1, limit: 500 });
+  const json = await postFilters(storeId, { filters, page: 1, limit: 500 });
   return json.data;
 }
 
 export async function setExternalOrderIds(
+  storeId: string,
   entries: Array<{ order_id: number; external_order_id: string }>,
 ): Promise<void> {
   if (entries.length === 0) return;
@@ -125,7 +127,7 @@ export async function setExternalOrderIds(
   };
   const res = await seloraxFetch(url, {
     method: "POST",
-    headers: seloraxHeaders(),
+    headers: seloraxHeaders(storeId),
     body: JSON.stringify(body),
     cache: "no-store",
   });

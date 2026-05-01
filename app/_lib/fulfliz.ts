@@ -8,13 +8,6 @@ import type {
   SeloraxOrder,
 } from "./types";
 
-// TEMPORARY: placeholder SKU used when an order_item's variant has no
-// sku_code in product_variant_option_combinations. FulFliz requires a SKU,
-// and we want to get the rest of the integration tested end-to-end before
-// the merchant backfills real SKUs in the catalog. Replace this fallback
-// (or remove it and re-enable the SKU-less filter) once SKUs are populated.
-const FALLBACK_SKU = "SKU-7955-27007";
-
 export function buildFulflizPayload(
   order: SeloraxOrder,
   creds: FulflizCredentials,
@@ -32,22 +25,25 @@ export function buildFulflizPayload(
     order_number: orderNumber,
     merchant_name: creds.merchantName,
     currier_name: String(order.courier ?? ""),
+    // Only items with a real SKU are sent. Items missing a sku_code in
+    // product_variant_option_combinations are dropped per-item; orders that
+    // end up with no items at all are caught by ordersWithoutSkus() and
+    // skipped before ever calling FulFliz.
     products: order.items
-      .filter((it) => (it.quantity ?? 0) > 0)
+      .filter((it) => it.sku && (it.quantity ?? 0) > 0)
       .map((it) => ({
-        sku: it.sku ? String(it.sku) : FALLBACK_SKU,
+        sku: String(it.sku),
         quantity: Number(it.quantity),
       })),
   };
 }
 
-// Returns a list of order_ids whose products[] would be empty (no items at
-// all, or only zero-quantity items). With the FALLBACK_SKU above, missing
-// SKUs no longer cause an order to be dropped — only structurally empty
-// orders are skipped now.
+// Returns order_ids whose products[] would be empty after the SKU filter.
+// The route handler counts these as `skipped` and surfaces a notice instead
+// of submitting an empty payload to FulFliz.
 export function ordersWithoutSkus(orders: SeloraxOrder[]): number[] {
   return orders
-    .filter((o) => !o.items.some((it) => (it.quantity ?? 0) > 0))
+    .filter((o) => !o.items.some((it) => it.sku && (it.quantity ?? 0) > 0))
     .map((o) => o.order_id);
 }
 

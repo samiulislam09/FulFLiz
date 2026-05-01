@@ -4,6 +4,7 @@ import { FULFLIZ_METAFIELD_PATH } from "@/app/_lib/types";
 import { OrdersTable } from "@/app/_components/OrdersTable";
 import { EmptyState } from "@/app/_components/EmptyState";
 import { SetupForm } from "@/app/_components/SetupForm";
+import { SettingsButton } from "@/app/_components/SettingsButton";
 
 export const dynamic = "force-dynamic";
 
@@ -20,19 +21,41 @@ function parseLimit(value: string | string[] | undefined): number {
   return (PAGE_SIZES as readonly number[]).includes(n) ? n : DEFAULT_PAGE_SIZE;
 }
 
+function parseStoreId(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw || !/^\d+$/.test(raw.trim())) return null;
+  return raw.trim();
+}
+
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string; limit?: string }>;
+  searchParams: Promise<{ store_id?: string; page?: string; limit?: string }>;
 }) {
-  // Gate the entire page on FulFliz credentials being set up for this store.
-  // Until they are, we render the SetupForm instead of the orders table.
-  const credsResult = await loadFulflizCredentials();
+  const params = await searchParams;
+  const storeId = parseStoreId(params.store_id);
+
+  if (!storeId) {
+    return (
+      <div className="mx-auto w-full max-w-2xl flex-1 px-6 py-16">
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-6 text-amber-900">
+          <h2 className="text-lg font-semibold">Store context missing</h2>
+          <p className="mt-2 text-sm">
+            This app must be opened from inside the SeloraX dashboard so it knows which store to
+            operate on. The dashboard passes the store via{" "}
+            <span className="font-mono text-xs">?store_id=…</span> in the URL.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const credsResult = await loadFulflizCredentials(storeId);
 
   if (credsResult.state !== "ready") {
     const blockingMessage =
       credsResult.state === "tables-not-installed"
-        ? "Metafield tables aren't installed in this database. Run SeloraX-Backend/migrations/2026-03-09-app-metafields.sql before saving credentials."
+        ? "Metafield tables aren't installed in this database. Run the metafields migration before saving credentials."
         : null;
 
     return (
@@ -45,19 +68,16 @@ export default async function Home({
             Configure your FulFliz credentials to start syncing orders.
           </p>
         </header>
-        <SetupForm blockingMessage={blockingMessage} />
+        <SetupForm storeId={storeId} blockingMessage={blockingMessage} />
       </div>
     );
   }
 
-  const params = await searchParams;
   const page = parsePage(params.page);
   const limit = parseLimit(params.limit);
 
-  const { data, pagination } = await listProcessingOrdersWithCourier({ page, limit });
+  const { data, pagination } = await listProcessingOrdersWithCourier(storeId, { page, limit });
 
-  // Format display strings server-side with an explicit locale + timezone so
-  // the client renders the same characters and React's hydration check passes.
   const dateFmt = new Intl.DateTimeFormat("en-GB", {
     dateStyle: "short",
     timeStyle: "short",
@@ -80,19 +100,30 @@ export default async function Home({
 
   return (
     <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
-      <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          FulFliz Order Sync
-        </h1>
-        <p className="mt-1 text-sm text-zinc-600">
-          Processing orders with a courier assigned. Select the ones you want to send to FulFliz.
-        </p>
+      <header className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
+            FulFliz Order Sync
+          </h1>
+          <p className="mt-1 text-sm text-zinc-600">
+            Processing orders with a courier assigned. Select the ones you want to send to FulFliz.
+          </p>
+        </div>
+        <SettingsButton
+          storeId={storeId}
+          initial={{
+            merchantName: credsResult.credentials.merchantName,
+            clientId: credsResult.credentials.clientId,
+            apiSecret: credsResult.credentials.apiSecret,
+          }}
+        />
       </header>
 
       {pagination.total === 0 ? (
         <EmptyState />
       ) : (
         <OrdersTable
+          storeId={storeId}
           rows={rows}
           pagination={{
             page: pagination.page,

@@ -5,7 +5,20 @@ import { ensureFulflizMetafieldDefinitions } from "@/app/_lib/bootstrap-metafiel
 import { loadFulflizCredentials } from "@/app/_lib/credentials";
 import { FULFLIZ_METAFIELD_PATH } from "@/app/_lib/types";
 
-type Body = { orderIds?: unknown };
+type Body = { storeId?: unknown; orderIds?: unknown };
+
+function validateStoreId(input: unknown): { ok: true; storeId: string } | { ok: false; error: string } {
+  if (typeof input !== "string" || !input.trim()) {
+    return { ok: false, error: "storeId is required" };
+  }
+  // Trust but verify: SeloraX backend rejects requests for stores where this
+  // app isn't installed, so a forged storeId from the browser can only ever
+  // access stores the merchant has already authorized this app on.
+  if (!/^\d+$/.test(input.trim())) {
+    return { ok: false, error: "storeId must be numeric" };
+  }
+  return { ok: true, storeId: input.trim() };
+}
 
 function validateOrderIds(input: unknown): { ok: true; ids: number[] } | { ok: false; error: string } {
   if (!Array.isArray(input)) return { ok: false, error: "orderIds must be an array" };
@@ -29,24 +42,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const storeValidated = validateStoreId(body.storeId);
+  if (!storeValidated.ok) return NextResponse.json({ error: storeValidated.error }, { status: 400 });
+  const storeId = storeValidated.storeId;
+
   const validated = validateOrderIds(body.orderIds);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
-  }
+  if (!validated.ok) return NextResponse.json({ error: validated.error }, { status: 400 });
   const requestedIds = validated.ids;
 
-  // Load FulFliz credentials from per-store metafields. The page should have
-  // shown the setup form before letting the user reach this handler — but
-  // double-check defensively in case the creds were deleted between page load
-  // and submit.
-  const credsResult = await loadFulflizCredentials();
+  const credsResult = await loadFulflizCredentials(storeId);
   if (credsResult.state !== "ready") {
     return NextResponse.json(
       {
         error:
           credsResult.state === "tables-not-installed"
-            ? "Metafield tables aren't installed — run the metafields migration first."
-            : "FulFliz credentials are missing. Open the app and complete setup.",
+            ? "Metafield tables aren't installed."
+            : "FulFliz credentials are missing for this store. Open the app and complete setup.",
       },
       { status: 400 },
     );
@@ -55,7 +66,7 @@ export async function POST(request: Request) {
 
   let orders;
   try {
-    orders = await fetchOrdersByIds(requestedIds);
+    orders = await fetchOrdersByIds(storeId, requestedIds);
   } catch (err) {
     console.error("[/api/sync] SeloraX re-fetch failed:", err);
     return NextResponse.json(
@@ -64,8 +75,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Drop orders that are already synced OR have no SKU-bearing items. Both
-  // count toward `skipped` so the user sees one number, not two confusing ones.
   const notSynced = orders.filter((o) => !o.metafields?.[FULFLIZ_METAFIELD_PATH]);
   const skuLessIds = new Set(ordersWithoutSkus(notSynced));
   const eligible = notSynced.filter((o) => !skuLessIds.has(o.order_id));
@@ -96,10 +105,6 @@ export async function POST(request: Request) {
 
   const payloads = eligible.map((o) => buildFulflizPayload(o, creds));
 
-  // Show, per order, which SKUs are real (came back from the variant join) vs
-  // the fallback placeholder. Helps diagnose FK violations on FulFliz's side
-  // when a "real" SKU isn't registered in their products table.
-  const FALLBACK = "SKU-7955-27007";
   const skuBreakdown = eligible.map((o) => ({
     order_id: o.order_id,
     items: o.items
@@ -107,9 +112,8 @@ export async function POST(request: Request) {
       .map((it) => ({
         name: it.name,
         variant_id: it.variant_id,
-        sku_in_db: it.sku,
-        sku_sent_to_fulfliz: it.sku ? String(it.sku) : FALLBACK,
-        is_fallback: !it.sku,
+        sku: it.sku,
+        will_be_sent: Boolean(it.sku),
         quantity: it.quantity,
       })),
   }));
@@ -135,13 +139,7 @@ export async function POST(request: Request) {
     );
   }
 
-  // Match returned external IDs to our orders by order_number (the only stable
-  // identifier in both directions). FulFliz echoes order_number per entry.
-  // Their docs are inconsistent about where the back-link lives: the field
-  // description table says `data[].extranalOrderId`, but the response example
-  // only shows `extranalOrderId` inside products[]. We accept either, plus
-  // `data[].id` (the FulFliz primary key) as a final fallback so we always
-  // capture *some* back-link.
+  // Match returned external IDs to our orders by order_number.
   const byOrderNumber = new Map<string, string>();
   for (const d of fulflizResult.data) {
     if (!d.order_number) continue;
@@ -187,13 +185,12 @@ export async function POST(request: Request) {
   );
 
   try {
-    const bootstrap = await ensureFulflizMetafieldDefinitions();
+    const bootstrap = await ensureFulflizMetafieldDefinitions(storeId);
     if (bootstrap.available) {
-      await setExternalOrderIds(tagEntries);
+      await setExternalOrderIds(storeId, tagEntries);
     } else {
       console.info(
-        "[/api/sync] Metafield tables not installed — skipping tracking write. " +
-          "Run SeloraX-Backend/migrations/2026-03-09-app-metafields.sql to enable.",
+        "[/api/sync] Metafield tables not installed — skipping tracking write.",
       );
     }
   } catch (err) {

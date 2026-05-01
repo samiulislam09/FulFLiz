@@ -19,28 +19,28 @@ const KEYS = {
   apiSecret: "api_secret",
 } as const;
 
-const headers = () => ({
+const headers = (storeId: string) => ({
   "Content-Type": "application/json",
   "X-Client-Id": env.SELORAX_CLIENT_ID,
   "X-Client-Secret": env.SELORAX_CLIENT_SECRET,
-  "X-Store-Id": env.STORE_ID,
+  "X-Store-Id": storeId,
 });
 
 function isMissingTableBody(body: string): boolean {
-  return body.includes("doesn't exist") && body.includes("app_metafield");
+  return body.includes("doesn't exist") && body.includes("metafield");
 }
 
 /**
- * Reads the 3 FulFliz credential metafields for the configured store. Returns
+ * Reads the 3 FulFliz credential metafields for the given store. Returns
  * a discriminated result so callers can distinguish "all set" from "user has
  * to fill in setup form" from "metafield tables don't exist in this DB".
  */
-export async function loadFulflizCredentials(): Promise<CredentialsResult> {
+export async function loadFulflizCredentials(storeId: string): Promise<CredentialsResult> {
   const url = new URL(`${env.APP_API_URL}/api/apps/v1/metafields/values`);
   url.searchParams.set("resource_type", "store");
-  url.searchParams.set("resource_id", env.STORE_ID);
+  url.searchParams.set("resource_id", storeId);
 
-  const res = await fetch(url, { headers: headers(), cache: "no-store" });
+  const res = await fetch(url, { headers: headers(storeId), cache: "no-store" });
 
   if (res.status >= 500) {
     const body = await res.text().catch(() => "");
@@ -75,21 +75,25 @@ export async function loadFulflizCredentials(): Promise<CredentialsResult> {
 }
 
 /**
- * Writes the 3 credential metafields for the configured store. Definitions
- * must already exist (see bootstrap-metafield.ts → ensureCredentialDefinitions).
+ * Writes the 3 credential metafields for the given store. Definitions must
+ * already exist (see bootstrap-metafield.ts).
  */
-export async function saveFulflizCredentials(creds: FulflizCredentials): Promise<void> {
+export async function saveFulflizCredentials(
+  storeId: string,
+  creds: FulflizCredentials,
+): Promise<void> {
   const url = `${env.APP_API_URL}/api/apps/v1/metafields/values`;
+  const resourceId = Number(storeId);
   const body = {
     metafields: [
-      { namespace: NAMESPACE, key: KEYS.merchantName, resource_type: "store", resource_id: Number(env.STORE_ID), value: creds.merchantName },
-      { namespace: NAMESPACE, key: KEYS.clientId, resource_type: "store", resource_id: Number(env.STORE_ID), value: creds.clientId },
-      { namespace: NAMESPACE, key: KEYS.apiSecret, resource_type: "store", resource_id: Number(env.STORE_ID), value: creds.apiSecret },
+      { namespace: NAMESPACE, key: KEYS.merchantName, resource_type: "store", resource_id: resourceId, value: creds.merchantName },
+      { namespace: NAMESPACE, key: KEYS.clientId, resource_type: "store", resource_id: resourceId, value: creds.clientId },
+      { namespace: NAMESPACE, key: KEYS.apiSecret, resource_type: "store", resource_id: resourceId, value: creds.apiSecret },
     ],
   };
   const res = await fetch(url, {
     method: "POST",
-    headers: headers(),
+    headers: headers(storeId),
     body: JSON.stringify(body),
     cache: "no-store",
   });

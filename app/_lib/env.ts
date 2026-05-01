@@ -16,14 +16,12 @@ function readOptional(name: string): string {
 // `next build` working without production secrets while still failing loudly
 // on the first request that needs them.
 //
-// FULFLIZ_* are no longer required env vars — they're stored as per-store
-// metafields (fulfliz.merchant_name, .client_id, .api_secret) and read at
-// request time. FULFLIZ_API_BASE_URL stays in env because it's deployment-
-// level config, not per-store.
+// `STORE_ID` is intentionally not here — it's read per-request from the URL
+// (Server Components: `searchParams.store_id`; route handlers: request body).
+// FULFLIZ_* are stored as per-store metafields, not env.
 export const env = {
   get SELORAX_CLIENT_ID() { return read("SELORAX_CLIENT_ID"); },
   get SELORAX_CLIENT_SECRET() { return read("SELORAX_CLIENT_SECRET"); },
-  get STORE_ID() { return read("STORE_ID"); },
   get APP_API_URL() { return read("APP_API_URL"); },
   get FULFLIZ_API_BASE_URL() { return readOptional("FULFLIZ_API_BASE_URL") || "https://api.fulfliz.com/api/v1"; },
 } as const;
