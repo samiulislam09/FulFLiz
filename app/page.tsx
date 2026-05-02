@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { listProcessingOrdersWithCourier, listSentOrders } from "@/app/_lib/selorax";
 import { loadFulflizCredentials } from "@/app/_lib/credentials";
 import { FULFLIZ_METAFIELD_PATH, type View } from "@/app/_lib/types";
@@ -7,6 +8,7 @@ import { EmptyState } from "@/app/_components/EmptyState";
 import { SetupForm } from "@/app/_components/SetupForm";
 import { SettingsButton } from "@/app/_components/SettingsButton";
 import { ViewTabs } from "@/app/_components/ViewTabs";
+import { TableSkeleton } from "@/app/_components/TableSkeleton";
 
 export const dynamic = "force-dynamic";
 
@@ -118,23 +120,31 @@ export default async function Home({
         <ViewTabs storeId={storeId} active={view} />
       </div>
 
-      {view === "sent" ? (
-        <SentView
-          storeId={storeId}
-          page={page}
-          limit={limit}
-          dateFmt={dateFmt}
-          numberFmt={numberFmt}
-        />
-      ) : (
-        <TodoView
-          storeId={storeId}
-          page={page}
-          limit={limit}
-          dateFmt={dateFmt}
-          numberFmt={numberFmt}
-        />
-      )}
+      {/*
+        key includes view + page + limit so any URL change that triggers a new
+        data fetch also remounts the boundary, forcing the skeleton to show.
+        Without `key`, React would keep the previous table visible during the
+        transition and the skeleton would never appear.
+      */}
+      <Suspense key={`${view}:${page}:${limit}`} fallback={<TableSkeleton />}>
+        {view === "sent" ? (
+          <SentView
+            storeId={storeId}
+            page={page}
+            limit={limit}
+            dateFmt={dateFmt}
+            numberFmt={numberFmt}
+          />
+        ) : (
+          <TodoView
+            storeId={storeId}
+            page={page}
+            limit={limit}
+            dateFmt={dateFmt}
+            numberFmt={numberFmt}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }
