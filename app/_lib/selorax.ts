@@ -1,6 +1,9 @@
 import "server-only";
 import { env } from "./env";
-import type { SeloraxListResponse, SeloraxOrder } from "./types";
+import { FULFLIZ_METAFIELD_PATH, type SeloraxListResponse, type SeloraxOrder } from "./types";
+
+// Backend caps `limit` at 250 (SeloraX-Backend/routers/apps/v1/orders.js:392).
+const BACKEND_LIMIT_CAP = 250;
 
 function seloraxHeaders(storeId: string) {
   return {
@@ -92,6 +95,49 @@ export async function listProcessingOrdersWithCourier(
     sort: "created_at",
     order: "DESC",
   });
+}
+
+export type SentOrdersResult = {
+  data: SeloraxOrder[];
+  pagination: { page: number; limit: number; total: number };
+  // True when the unfiltered ready-to-ship set (processing + tracking_code)
+  // hit the backend's 250-row cap. Means older sent orders may be missing
+  // from this view. The page surfaces this as a banner so it's not silent.
+  truncated: boolean;
+};
+
+/**
+ * Returns orders that have already been sent to FulFliz (i.e. have the
+ * `fulfliz.external_order_id` metafield set), within the same "ready to ship"
+ * universe as listProcessingOrdersWithCourier.
+ *
+ * Implementation note: the backend supports `exclude_metafields` but not the
+ * inverse. We fetch the most recent BACKEND_LIMIT_CAP ready-to-ship orders,
+ * filter client-side for the ones with the metafield, then paginate the
+ * filtered set ourselves. This is bounded by BACKEND_LIMIT_CAP — if a store
+ * has more than that many simultaneous ready-to-ship orders, older sent
+ * orders won't appear here. `truncated` flags that case.
+ */
+export async function listSentOrders(
+  storeId: string,
+  options: { page?: number; limit?: number } = {},
+): Promise<SentOrdersResult> {
+  const { page = 1, limit = 25 } = options;
+  const all = await postFilters(storeId, {
+    filters: approvedCourierFilters(),
+    page: 1,
+    limit: BACKEND_LIMIT_CAP,
+    sort: "created_at",
+    order: "DESC",
+  });
+  const sent = all.data.filter((o) => Boolean(o.metafields?.[FULFLIZ_METAFIELD_PATH]));
+  const start = (page - 1) * limit;
+  const end = start + limit;
+  return {
+    data: sent.slice(start, end),
+    pagination: { page, limit, total: sent.length },
+    truncated: all.data.length >= BACKEND_LIMIT_CAP,
+  };
 }
 
 export async function fetchOrdersByIds(storeId: string, orderIds: number[]): Promise<SeloraxOrder[]> {

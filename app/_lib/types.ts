@@ -87,3 +87,16 @@ export type OrderRow = {
   itemCount: number;
   alreadySynced: boolean;
 };
+
+export type SentOrderRow = {
+  order_id: number;
+  store_serial_order_no: string | null;
+  courier: string | null;
+  tracking_code: string | null;
+  external_order_id: string;
+  grand_total_display: string;
+  created_at_display: string;
+  itemCount: number;
+};
+
+export type View = "todo" | "sent";

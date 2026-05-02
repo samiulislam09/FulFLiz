@@ -1,10 +1,12 @@
-import { listProcessingOrdersWithCourier } from "@/app/_lib/selorax";
+import { listProcessingOrdersWithCourier, listSentOrders } from "@/app/_lib/selorax";
 import { loadFulflizCredentials } from "@/app/_lib/credentials";
-import { FULFLIZ_METAFIELD_PATH } from "@/app/_lib/types";
+import { FULFLIZ_METAFIELD_PATH, type View } from "@/app/_lib/types";
 import { OrdersTable } from "@/app/_components/OrdersTable";
+import { SentOrdersTable } from "@/app/_components/SentOrdersTable";
 import { EmptyState } from "@/app/_components/EmptyState";
 import { SetupForm } from "@/app/_components/SetupForm";
 import { SettingsButton } from "@/app/_components/SettingsButton";
+import { ViewTabs } from "@/app/_components/ViewTabs";
 
 export const dynamic = "force-dynamic";
 
@@ -27,10 +29,15 @@ function parseStoreId(value: string | string[] | undefined): string | null {
   return raw.trim();
 }
 
+function parseView(value: string | string[] | undefined): View {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw === "sent" ? "sent" : "todo";
+}
+
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ store_id?: string; page?: string; limit?: string }>;
+  searchParams: Promise<{ store_id?: string; page?: string; limit?: string; view?: string }>;
 }) {
   const params = await searchParams;
   const storeId = parseStoreId(params.store_id);
@@ -73,10 +80,9 @@ export default async function Home({
     );
   }
 
+  const view = parseView(params.view);
   const page = parsePage(params.page);
   const limit = parseLimit(params.limit);
-
-  const { data, pagination } = await listProcessingOrdersWithCourier(storeId, { page, limit });
 
   const dateFmt = new Intl.DateTimeFormat("en-GB", {
     dateStyle: "short",
@@ -84,6 +90,69 @@ export default async function Home({
     timeZone: "Asia/Dhaka",
   });
   const numberFmt = new Intl.NumberFormat("en-US");
+
+  return (
+    <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
+      <header className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
+            FulFliz Order Sync
+          </h1>
+          <p className="mt-1 text-sm text-zinc-600">
+            {view === "sent"
+              ? "Orders you've already sent to FulFliz."
+              : "Processing orders with a courier assigned. Select the ones you want to send to FulFliz."}
+          </p>
+        </div>
+        <SettingsButton
+          storeId={storeId}
+          initial={{
+            merchantName: credsResult.credentials.merchantName,
+            clientId: credsResult.credentials.clientId,
+            apiSecret: credsResult.credentials.apiSecret,
+          }}
+        />
+      </header>
+
+      <div className="mb-6">
+        <ViewTabs storeId={storeId} active={view} />
+      </div>
+
+      {view === "sent" ? (
+        <SentView
+          storeId={storeId}
+          page={page}
+          limit={limit}
+          dateFmt={dateFmt}
+          numberFmt={numberFmt}
+        />
+      ) : (
+        <TodoView
+          storeId={storeId}
+          page={page}
+          limit={limit}
+          dateFmt={dateFmt}
+          numberFmt={numberFmt}
+        />
+      )}
+    </div>
+  );
+}
+
+async function TodoView({
+  storeId,
+  page,
+  limit,
+  dateFmt,
+  numberFmt,
+}: {
+  storeId: string;
+  page: number;
+  limit: number;
+  dateFmt: Intl.DateTimeFormat;
+  numberFmt: Intl.NumberFormat;
+}) {
+  const { data, pagination } = await listProcessingOrdersWithCourier(storeId, { page, limit });
 
   const rows = data.map((o) => ({
     order_id: o.order_id,
@@ -98,42 +167,69 @@ export default async function Home({
 
   const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.limit));
 
-  return (
-    <div className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
-      <header className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-            FulFliz Order Sync
-          </h1>
-          <p className="mt-1 text-sm text-zinc-600">
-            Processing orders with a courier assigned. Select the ones you want to send to FulFliz.
-          </p>
-        </div>
-        <SettingsButton
-          storeId={storeId}
-          initial={{
-            merchantName: credsResult.credentials.merchantName,
-            clientId: credsResult.credentials.clientId,
-            apiSecret: credsResult.credentials.apiSecret,
-          }}
-        />
-      </header>
+  if (pagination.total === 0) {
+    return <EmptyState view="todo" />;
+  }
 
-      {pagination.total === 0 ? (
-        <EmptyState />
-      ) : (
-        <OrdersTable
-          storeId={storeId}
-          rows={rows}
-          pagination={{
-            page: pagination.page,
-            limit: pagination.limit,
-            total: pagination.total,
-            totalPages,
-            pageSizes: [...PAGE_SIZES],
-          }}
-        />
-      )}
-    </div>
+  return (
+    <OrdersTable
+      storeId={storeId}
+      rows={rows}
+      pagination={{
+        page: pagination.page,
+        limit: pagination.limit,
+        total: pagination.total,
+        totalPages,
+        pageSizes: [...PAGE_SIZES],
+      }}
+    />
+  );
+}
+
+async function SentView({
+  storeId,
+  page,
+  limit,
+  dateFmt,
+  numberFmt,
+}: {
+  storeId: string;
+  page: number;
+  limit: number;
+  dateFmt: Intl.DateTimeFormat;
+  numberFmt: Intl.NumberFormat;
+}) {
+  const { data, pagination, truncated } = await listSentOrders(storeId, { page, limit });
+
+  const rows = data.map((o) => ({
+    order_id: o.order_id,
+    store_serial_order_no: o.store_serial_order_no,
+    courier: o.courier,
+    tracking_code: o.tracking_code,
+    external_order_id: String(o.metafields?.[FULFLIZ_METAFIELD_PATH] ?? ""),
+    grand_total_display: numberFmt.format(o.grand_total),
+    created_at_display: dateFmt.format(new Date(o.created_at)),
+    itemCount: o.items.length,
+  }));
+
+  const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.limit));
+
+  if (pagination.total === 0) {
+    return <EmptyState view="sent" />;
+  }
+
+  return (
+    <SentOrdersTable
+      storeId={storeId}
+      rows={rows}
+      pagination={{
+        page: pagination.page,
+        limit: pagination.limit,
+        total: pagination.total,
+        totalPages,
+        pageSizes: [...PAGE_SIZES],
+      }}
+      truncated={truncated}
+    />
   );
 }
