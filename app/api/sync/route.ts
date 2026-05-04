@@ -3,7 +3,8 @@ import { fetchOrdersByIds, setExternalOrderIds } from "@/app/_lib/selorax";
 import { buildFulflizPayload, createExternalOrders, ordersWithoutSkus } from "@/app/_lib/fulfliz";
 import { ensureFulflizMetafieldDefinitions } from "@/app/_lib/bootstrap-metafield";
 import { loadFulflizCredentials } from "@/app/_lib/credentials";
-import { FULFLIZ_METAFIELD_PATH } from "@/app/_lib/types";
+import { logSyncEvent } from "@/app/_lib/logger";
+import { FULFLIZ_METAFIELD_PATH, type FulflizPayload } from "@/app/_lib/types";
 
 type Body = { storeId?: unknown; orderIds?: unknown };
 
@@ -64,11 +65,34 @@ export async function POST(request: Request) {
   }
   const creds = credsResult.credentials;
 
+  // Accumulate everything we observe during this request. logSyncEvent() is
+  // called exactly once per exit path (after we've reached the SeloraX fetch),
+  // capturing the full lifecycle so a viewer can replay what happened.
+  let eligibleOrderIds: number[] = [];
+  let skippedOrderIds: number[] = [];
+  let payloads: FulflizPayload[] = [];
+  let fulflizError: Parameters<typeof logSyncEvent>[0]["fulflizError"];
+  let metafieldWrite: Parameters<typeof logSyncEvent>[0]["metafieldWrite"];
+
   let orders;
   try {
     orders = await fetchOrdersByIds(storeId, requestedIds);
   } catch (err) {
     console.error("[/api/sync] SeloraX re-fetch failed:", err);
+    await logSyncEvent({
+      storeId,
+      requestedOrderIds: requestedIds,
+      eligibleOrderIds: [],
+      skippedOrderIds: [],
+      fulflizPayloads: [],
+      fulflizError: {
+        status: 502,
+        code: "selorax_unreachable",
+        message: "Could not reach SeloraX",
+        details: String((err as Error)?.message ?? err).slice(0, 1500),
+      },
+      result: { ok: false, synced: 0, skipped: 0, warning: "SeloraX unreachable" },
+    });
     return NextResponse.json(
       { error: "Could not reach SeloraX", retryable: true },
       { status: 502 },
@@ -78,6 +102,8 @@ export async function POST(request: Request) {
   const notSynced = orders.filter((o) => !o.metafields?.[FULFLIZ_METAFIELD_PATH]);
   const skuLessIds = new Set(ordersWithoutSkus(notSynced));
   const eligible = notSynced.filter((o) => !skuLessIds.has(o.order_id));
+  eligibleOrderIds = eligible.map((o) => o.order_id);
+  skippedOrderIds = Array.from(skuLessIds);
 
   if (skuLessIds.size > 0) {
     const droppedSummary = notSynced
@@ -100,10 +126,18 @@ export async function POST(request: Request) {
   const skipped = requestedIds.length - eligible.length;
 
   if (eligible.length === 0) {
+    await logSyncEvent({
+      storeId,
+      requestedOrderIds: requestedIds,
+      eligibleOrderIds,
+      skippedOrderIds,
+      fulflizPayloads: [],
+      result: { ok: true, synced: 0, skipped },
+    });
     return NextResponse.json({ ok: true, synced: 0, skipped });
   }
 
-  const payloads = eligible.map((o) => buildFulflizPayload(o, creds));
+  payloads = eligible.map((o) => buildFulflizPayload(o, creds));
 
   const skuBreakdown = eligible.map((o) => ({
     order_id: o.order_id,
@@ -113,7 +147,7 @@ export async function POST(request: Request) {
         name: it.name,
         variant_id: it.variant_id,
         sku: it.sku,
-        will_be_sent: Boolean(it.sku),
+        will_be_sent: typeof it.sku === "string" && it.sku.trim() !== "",
         quantity: it.quantity,
       })),
   }));
@@ -123,10 +157,26 @@ export async function POST(request: Request) {
 
   const fulflizResult = await createExternalOrders(payloads, creds);
   if (!fulflizResult.ok) {
+    fulflizError = {
+      status: fulflizResult.status,
+      code: fulflizResult.code,
+      message: fulflizResult.message,
+      hint: fulflizResult.hint,
+      details: fulflizResult.details,
+    };
     console.error(
       `[/api/sync] FulFliz rejected (${fulflizResult.code}, HTTP ${fulflizResult.status}):`,
       fulflizResult.details,
     );
+    await logSyncEvent({
+      storeId,
+      requestedOrderIds: requestedIds,
+      eligibleOrderIds,
+      skippedOrderIds,
+      fulflizPayloads: payloads,
+      fulflizError,
+      result: { ok: false, synced: 0, skipped, warning: fulflizResult.message },
+    });
     return NextResponse.json(
       {
         error: fulflizResult.message,
@@ -138,6 +188,7 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
+  const fulflizResponse: unknown = fulflizResult.data;
 
   // Match returned external IDs to our orders by order_number.
   const byOrderNumber = new Map<string, string>();
@@ -152,31 +203,35 @@ export async function POST(request: Request) {
 
   const tagEntries: Array<{ order_id: number; external_order_id: string }> = [];
   for (const o of eligible) {
-    const key =
-      o.store_serial_order_no !== null && o.store_serial_order_no !== undefined
-        ? String(o.store_serial_order_no)
-        : String(o.order_id);
-    const extId = byOrderNumber.get(key);
+    // Match on order_id — same key buildFulflizPayload() sends as order_number.
+    const extId = byOrderNumber.get(String(o.order_id));
     if (extId) tagEntries.push({ order_id: o.order_id, external_order_id: extId });
   }
 
   if (tagEntries.length === 0) {
+    const warning =
+      "Submitted, but couldn't match FulFliz response to any order. Check FulFliz dashboard and server logs.";
     console.warn(
       "[/api/sync] Could not match FulFliz response back to any submitted order. " +
         "Order_number values we sent: " +
-        JSON.stringify(eligible.map((o) =>
-          o.store_serial_order_no !== null && o.store_serial_order_no !== undefined
-            ? String(o.store_serial_order_no)
-            : String(o.order_id),
-        )) +
+        JSON.stringify(eligible.map((o) => String(o.order_id))) +
         ". FulFliz response: " +
         JSON.stringify(fulflizResult.data).slice(0, 800),
     );
+    await logSyncEvent({
+      storeId,
+      requestedOrderIds: requestedIds,
+      eligibleOrderIds,
+      skippedOrderIds,
+      fulflizPayloads: payloads,
+      fulflizResponse,
+      result: { ok: true, synced: eligible.length, skipped, warning },
+    });
     return NextResponse.json({
       ok: true,
       synced: eligible.length,
       skipped,
-      warning: "Submitted, but couldn't match FulFliz response to any order. Check FulFliz dashboard and server logs.",
+      warning,
     });
   }
 
@@ -188,6 +243,7 @@ export async function POST(request: Request) {
     const bootstrap = await ensureFulflizMetafieldDefinitions(storeId);
     if (bootstrap.available) {
       await setExternalOrderIds(storeId, tagEntries);
+      metafieldWrite = { tagged: tagEntries };
     } else {
       console.info(
         "[/api/sync] Metafield tables not installed — skipping tracking write.",
@@ -195,13 +251,34 @@ export async function POST(request: Request) {
     }
   } catch (err) {
     console.error("[/api/sync] Metafield write failed after FulFliz success:", err);
+    const warning =
+      "Tracking write failed — orders ARE in FulFliz but not tagged in SeloraX. See logs.";
+    await logSyncEvent({
+      storeId,
+      requestedOrderIds: requestedIds,
+      eligibleOrderIds,
+      skippedOrderIds,
+      fulflizPayloads: payloads,
+      fulflizResponse,
+      result: { ok: true, synced: eligible.length, skipped, warning },
+    });
     return NextResponse.json({
       ok: true,
       synced: eligible.length,
       skipped,
-      warning: "Tracking write failed — orders ARE in FulFliz but not tagged in SeloraX. See logs.",
+      warning,
     });
   }
 
+  await logSyncEvent({
+    storeId,
+    requestedOrderIds: requestedIds,
+    eligibleOrderIds,
+    skippedOrderIds,
+    fulflizPayloads: payloads,
+    fulflizResponse,
+    metafieldWrite,
+    result: { ok: true, synced: eligible.length, skipped },
+  });
   return NextResponse.json({ ok: true, synced: eligible.length, skipped });
 }
