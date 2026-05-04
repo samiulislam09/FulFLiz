@@ -8,21 +8,23 @@ import type {
   SeloraxOrder,
 } from "./types";
 
+// Whitespace-only SKUs (e.g. "  ") would slip past a plain truthy check and
+// then fail FulFliz's foreign-key lookup. Trim before deciding.
+function hasUsableSku(item: { sku: string | null; quantity: number | null }): boolean {
+  return typeof item.sku === "string" && item.sku.trim() !== "" && (item.quantity ?? 0) > 0;
+}
+
 export function buildFulflizPayload(
   order: SeloraxOrder,
   creds: FulflizCredentials,
 ): FulflizPayload {
-  // FulFliz requires string for order_number — coerce regardless of how MySQL
-  // returns store_serial_order_no (often numeric for purely-digit values).
-  const orderNumber =
-    order.store_serial_order_no !== null && order.store_serial_order_no !== undefined
-      ? String(order.store_serial_order_no)
-      : String(order.order_id);
-
+  // FulFliz's order_number is the SeloraX order_id (stringified). We used to
+  // prefer store_serial_order_no, but that was ambiguous when stores reset
+  // or reused serials — order_id is the immutable primary key.
   return {
     apiSecret: creds.apiSecret,
     courier_cn_id: String(order.tracking_code ?? ""),
-    order_number: orderNumber,
+    order_number: String(order.order_id),
     merchant_name: creds.merchantName,
     currier_name: String(order.courier ?? ""),
     // Only items with a real SKU are sent. Items missing a sku_code in
@@ -30,9 +32,9 @@ export function buildFulflizPayload(
     // end up with no items at all are caught by ordersWithoutSkus() and
     // skipped before ever calling FulFliz.
     products: order.items
-      .filter((it) => it.sku && (it.quantity ?? 0) > 0)
+      .filter(hasUsableSku)
       .map((it) => ({
-        sku: String(it.sku),
+        sku: String(it.sku).trim(),
         quantity: Number(it.quantity),
       })),
   };
@@ -43,7 +45,7 @@ export function buildFulflizPayload(
 // of submitting an empty payload to FulFliz.
 export function ordersWithoutSkus(orders: SeloraxOrder[]): number[] {
   return orders
-    .filter((o) => !o.items.some((it) => it.sku && (it.quantity ?? 0) > 0))
+    .filter((o) => !o.items.some(hasUsableSku))
     .map((o) => o.order_id);
 }
 
